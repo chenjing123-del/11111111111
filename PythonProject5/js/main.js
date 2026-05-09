@@ -2,9 +2,13 @@ gsap.defaults({ ease: "power2.out" });
 
 let currentTool = 'select';
 let selectedShapes = [];
+let selectedWrappers = [];
 let undoStack = [];
 let grammarType = null;
 let isInverted = false;
+let draggedElement = null;
+let dragOffset = { x: 0, y: 0 };
+let patterns = new Map(); // 存储所有导入的 SVG
 
 const patternContainer = document.getElementById('pattern-container');
 const layerList = document.getElementById('layer-list');
@@ -20,209 +24,302 @@ const btnJump = document.getElementById('btn-jump');
 btnImport.onclick = () => uploadInput.click();
 
 uploadInput.onchange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => injectSVG(ev.target.result);
-    reader.readAsText(file);
+    const files = e.target.files;
+    if (!files) return;
+    
+    Array.from(files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (ev) => injectSVG(ev.target.result, file.name);
+        reader.readAsText(file);
+    });
+    
+    // 重置 input
+    uploadInput.value = '';
 };
 
-// 拖拽导入
+// 拖拽导入多个文件
 const canvas = document.getElementById('canvas');
 canvas.addEventListener('dragover', (e) => {
     e.preventDefault();
-    canvas.classList.add('dragover');
+    patternContainer.classList.add('dragover');
     e.dataTransfer.dropEffect = 'copy';
 });
 
 canvas.addEventListener('dragleave', () => {
-    canvas.classList.remove('dragover');
+    patternContainer.classList.remove('dragover');
 });
 
 canvas.addEventListener('drop', (e) => {
     e.preventDefault();
-    canvas.classList.remove('dragover');
+    patternContainer.classList.remove('dragover');
     if (e.dataTransfer.files && e.dataTransfer.files.length) {
-        const file = e.dataTransfer.files[0];
-        if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
-            const reader = new FileReader();
-            reader.onload = (ev) => injectSVG(ev.target.result);
-            reader.readAsText(file);
-        }
+        Array.from(e.dataTransfer.files).forEach(file => {
+            if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
+                const reader = new FileReader();
+                reader.onload = (ev) => injectSVG(ev.target.result, file.name);
+                reader.readAsText(file);
+            }
+        });
     }
 });
 
-// ========== SVG 注入与处理 ==========
-function injectSVG(svgText) {
+// ========== SVG 注入与处理（多纹样） ==========
+function injectSVG(svgText, fileName) {
     let trimmed = svgText.trim();
     if (!trimmed.startsWith('<svg')) {
         trimmed = `<svg xmlns="http://www.w3.org/2000/svg">${trimmed}</svg>`;
     }
 
-    patternContainer.innerHTML = '';
+    // 创建纹样卡片
     const wrapper = document.createElement('div');
     wrapper.className = 'pattern-wrapper';
+    wrapper.dataset.filename = fileName;
     wrapper.innerHTML = trimmed;
 
     const svg = wrapper.querySelector('svg');
     if (svg) {
         svg.classList.add('svg-canvas');
-        if (!svg.hasAttribute('id')) svg.id = 'canvas-svg';
+        if (!svg.hasAttribute('id')) svg.id = `svg-${Date.now()}`;
     }
 
+    // 添加标签
+    const label = document.createElement('div');
+    label.className = 'pattern-label';
+    label.textContent = fileName.replace('.svg', '');
+    wrapper.appendChild(label);
+
+    // 绑定拖拽和点击事件
+    bindWrapperEvents(wrapper);
+    
     patternContainer.appendChild(wrapper);
+    patterns.set(fileName, wrapper);
+    
     updateLayerList();
-    bindShapeEvents();
     pushHistory();
+}
+
+// ========== 纹样卡片事件绑定 ==========
+function bindWrapperEvents(wrapper) {
+    // 鼠标按下开始拖拽
+    wrapper.addEventListener('mousedown', (e) => {
+        if (currentTool === 'move') {
+            draggedElement = wrapper;
+            const rect = wrapper.getBoundingClientRect();
+            const containerRect = patternContainer.getBoundingClientRect();
+            
+            dragOffset.x = e.clientX - rect.left;
+            dragOffset.y = e.clientY - rect.top;
+            
+            wrapper.classList.add('dragging');
+            e.preventDefault();
+        } else if (currentTool === 'select') {
+            // 选择工具：切换选中状态
+            if (e.shiftKey) {
+                wrapper.classList.toggle('selected');
+                if (wrapper.classList.contains('selected')) {
+                    selectedWrappers.push(wrapper);
+                } else {
+                    selectedWrappers = selectedWrappers.filter(w => w !== wrapper);
+                }
+            } else {
+                clearWrapperSelection();
+                wrapper.classList.add('selected');
+                selectedWrappers = [wrapper];
+            }
+            showPatternProperties(wrapper);
+            e.preventDefault();
+        }
+    });
+
+    // 点击纹样应用文法
+    wrapper.addEventListener('click', (e) => {
+        if (currentTool === 'eyedropper' && grammarType) {
+            const svg = wrapper.querySelector('svg');
+            if (svg) {
+                applyGrammarRule(svg, grammarType);
+                document.getElementById('tool-select').click();
+                updateLayerList();
+                pushHistory();
+            }
+        }
+    });
+}
+
+// ========== 全局拖拽处理 ==========
+document.addEventListener('mousemove', (e) => {
+    if (draggedElement && currentTool === 'move') {
+        const containerRect = patternContainer.getBoundingClientRect();
+        const x = e.clientX - containerRect.left - dragOffset.x;
+        const y = e.clientY - containerRect.top - dragOffset.y;
+        
+        draggedElement.style.position = 'absolute';
+        draggedElement.style.left = `${Math.max(0, Math.min(x, containerRect.width - draggedElement.offsetWidth))}px`;
+        draggedElement.style.top = `${Math.max(0, Math.min(y, containerRect.height - draggedElement.offsetHeight))}px`;
+    }
+});
+
+document.addEventListener('mouseup', () => {
+    if (draggedElement) {
+        draggedElement.classList.remove('dragging');
+        draggedElement = null;
+        pushHistory();
+    }
+});
+
+// ========== 纹样选择管理 ==========
+function clearWrapperSelection() {
+    patternContainer.querySelectorAll('.pattern-wrapper').forEach(w => {
+        w.classList.remove('selected');
+    });
+    selectedWrappers = [];
+    propertiesPanel.innerHTML = '<p style="color: #999; font-size: 12px;">选中纹样后显示详细信息</p>';
+}
+
+function showPatternProperties(wrapper) {
+    const svg = wrapper.querySelector('svg');
+    if (!svg) return;
+    
+    const bbox = svg.getBBox();
+    const pos = wrapper.style.position === 'absolute' 
+        ? `left: ${wrapper.style.left || '0px'}, top: ${wrapper.style.top || '0px'}`
+        : '自动布局';
+    
+    propertiesPanel.innerHTML = `
+        <div class="property-item">
+            <span class="property-label">文件名:</span>
+            <span class="property-value">${wrapper.dataset.filename}</span>
+        </div>
+        <div class="property-item">
+            <span class="property-label">尺寸:</span>
+            <span class="property-value">${bbox.width.toFixed(0)} × ${bbox.height.toFixed(0)}</span>
+        </div>
+        <div class="property-item">
+            <span class="property-label">位置:</span>
+            <span class="property-value">${pos}</span>
+        </div>
+    `;
 }
 
 // ========== 图层管理 ==========
 function updateLayerList() {
     layerList.innerHTML = '';
-    const svg = patternContainer.querySelector('svg');
-    if (!svg) return;
-
-    const elements = getAllSVGElements(svg);
-
-    elements.forEach((el, idx) => {
+    
+    patterns.forEach((wrapper, fileName) => {
         const li = document.createElement('li');
         li.className = 'layer-item';
-        li.dataset.index = idx;
-
-        const depth = getElementDepth(el);
-        li.style.paddingLeft = (12 + depth * 16) + 'px';
-
+        
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.checked = el.style.display !== 'none';
+        checkbox.checked = wrapper.style.display !== 'none';
         checkbox.onchange = (ev) => {
             ev.stopPropagation();
-            el.style.display = checkbox.checked ? '' : 'none';
+            wrapper.style.display = checkbox.checked ? '' : 'none';
             pushHistory();
         };
-
+        
         const label = document.createElement('span');
         label.className = 'layer-label';
-        label.textContent = el.id || el.tagName;
-        label.onclick = () => {
-            clearSelection();
-            el.classList.add('selected');
-            selectedShapes = [el];
-            updateLayerSelection();
-            showElementProperties(el);
+        label.textContent = fileName;
+        label.onclick = (ev) => {
+            ev.stopPropagation();
+            clearWrapperSelection();
+            wrapper.classList.add('selected');
+            selectedWrappers = [wrapper];
+            showPatternProperties(wrapper);
         };
-
+        
         li.appendChild(checkbox);
         li.appendChild(label);
         layerList.appendChild(li);
     });
 }
 
-function getAllSVGElements(parent, result = []) {
-    const children = Array.from(parent.children);
-    children.forEach(child => {
-        if (child.tagName !== 'defs' && child.tagName !== 'style') {
-            result.push(child);
-            if (child.children.length > 0) {
-                getAllSVGElements(child, result);
+// ========== 工具切换 ==========
+document.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.onclick = () => {
+        // 特殊按钮处理
+        if (btn.id === 'tool-reset') {
+            if (confirm('确定要重置所有纹样吗？')) {
+                patternContainer.innerHTML = '';
+                patterns.clear();
+                clearWrapperSelection();
+                updateLayerList();
+                pushHistory();
             }
+            return;
         }
-    });
-    return result;
-}
-
-function getElementDepth(el) {
-    let depth = 0;
-    let parent = el.parentElement;
-    while (parent && parent.tagName !== 'svg') {
-        depth++;
-        parent = parent.parentElement;
-    }
-    return depth;
-}
-
-// ========== 元素选择 ==========
-function bindShapeEvents() {
-    const svg = patternContainer.querySelector('svg');
-    if (!svg) return;
-
-    const shapes = svg.querySelectorAll('path, ellipse, rect, circle, polygon, g');
-    shapes.forEach(el => {
-        el.style.cursor = 'pointer';
-        el.onclick = (e) => {
-            e.stopPropagation();
-            if (e.shiftKey) {
-                if (selectedShapes.includes(el)) {
-                    el.classList.remove('selected');
-                    selectedShapes = selectedShapes.filter(x => x !== el);
-                } else {
-                    el.classList.add('selected');
-                    selectedShapes.push(el);
-                }
-            } else {
-                clearSelection();
-                el.classList.add('selected');
-                selectedShapes = [el];
-            }
-            updateLayerSelection();
-            if (selectedShapes.length === 1) {
-                showElementProperties(selectedShapes[0]);
-            }
-        };
-    });
-
-    patternContainer.onclick = (e) => {
-        if (e.target === patternContainer || e.target.classList.contains('pattern-wrapper')) {
-            clearSelection();
+        
+        if (btn.id === 'tool-bg-color') {
+            showColorPicker();
+            return;
         }
+        
+        if (btn.id === 'tool-play-video') {
+            alert('视频播放功能开发中...');
+            return;
+        }
+
+        if (btn.id === 'tool-delete') {
+            selectedWrappers.forEach(w => w.remove());
+            selectedWrappers.forEach(w => patterns.delete(w.dataset.filename));
+            selectedWrappers = [];
+            updateLayerList();
+            clearWrapperSelection();
+            pushHistory();
+            return;
+        }
+
+        // 普通工具切换
+        document.querySelectorAll('.tool-btn').forEach(t => {
+            if (!['tool-bg-color', 'tool-play-video', 'tool-delete', 'tool-reset'].includes(t.id)) {
+                t.classList.remove('active');
+            }
+        });
+        btn.classList.add('active');
+        currentTool = btn.id.replace('tool-', '');
+        document.body.style.cursor = (currentTool === 'eyedropper') ? 'crosshair' : 'default';
     };
-}
+});
 
-function clearSelection() {
-    patternContainer.querySelectorAll('.selected').forEach(e => e.classList.remove('selected'));
-    selectedShapes = [];
-    updateLayerSelection();
-    propertiesPanel.innerHTML = '<p style="color: #999; font-size: 12px;">选中元素后显示属性</p>';
-}
-
-function updateLayerSelection() {
-    const lis = layerList.querySelectorAll('li');
-    lis.forEach(li => li.classList.remove('selected'));
-    const svg = patternContainer.querySelector('svg');
-    const elements = getAllSVGElements(svg);
-
-    elements.forEach((el, idx) => {
-        if (selectedShapes.includes(el)) {
-            const lis = layerList.querySelectorAll('li');
-            lis.forEach(li => {
-                if (parseInt(li.dataset.index) === idx) {
-                    li.classList.add('selected');
-                }
-            });
-        }
-    });
-}
-
-// ========== 元素属性显示 ==========
-function showElementProperties(el) {
+// ========== 背景颜色选择 ==========
+function showColorPicker() {
+    const currentBg = window.getComputedStyle(patternContainer).backgroundColor;
+    
     propertiesPanel.innerHTML = `
-        <div class="property-item">
-            <span>标签:</span>
-            <span>${el.tagName}</span>
-        </div>
-        <div class="property-item">
-            <span>ID:</span>
-            <span>${el.id || '(无)'}</span>
-        </div>
-        <div class="property-item">
-            <span>填充:</span>
-            <span>${el.getAttribute('fill') || getComputedStyle(el).fill}</span>
-        </div>
-        <div class="property-item">
-            <span>描边:</span>
-            <span>${el.getAttribute('stroke') || getComputedStyle(el).stroke}</span>
+        <div class="color-picker-container">
+            <div class="color-input-group">
+                <input type="color" id="bg-color-input" value="${rgbToHex(currentBg)}" />
+                <input type="text" class="color-value" id="bg-color-value" value="${rgbToHex(currentBg)}" readonly />
+            </div>
+            <button style="padding: 8px; margin-top: 8px; background: var(--accent-blue); color: white; border: none; border-radius: 4px; cursor: pointer;">应用</button>
         </div>
     `;
+    
+    const colorInput = document.getElementById('bg-color-input');
+    const colorValue = document.getElementById('bg-color-value');
+    const applyBtn = propertiesPanel.querySelector('button');
+    
+    colorInput.addEventListener('input', (e) => {
+        colorValue.value = e.target.value;
+        patternContainer.style.backgroundColor = e.target.value;
+    });
+    
+    applyBtn.addEventListener('click', () => {
+        const color = colorInput.value;
+        patternContainer.style.backgroundColor = color;
+        document.documentElement.style.setProperty('--canvas-bg', color);
+        clearWrapperSelection();
+        pushHistory();
+    });
+}
+
+function rgbToHex(rgb) {
+    if (!rgb || rgb === 'transparent') return '#1a1a1a';
+    const match = rgb.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+    if (!match) return rgb;
+    
+    const hex = (x) => ('0' + parseInt(x).toString(16)).slice(-2);
+    return '#' + hex(match[1]) + hex(match[2]) + hex(match[3]);
 }
 
 // ========== 文法规则 ==========
@@ -234,57 +331,14 @@ document.querySelectorAll('.grammar-tag').forEach(tag => {
         currentTool = 'eyedropper';
         document.getElementById('tool-eyedropper').classList.add('active');
 
-        // 更新属性面板显示文法说明
         const descriptions = {
             'repeat': '二方连续：沿水平方向重复纹样 4 次',
             'symmetry': '对称式：纹样上下镜像并竖直排列',
             'four-way': '四方连续：纹样以 2×2 网格排列',
             'center': '中心式：纹样围绕中心 4 重旋转'
         };
-        propertiesPanel.innerHTML = `<p style="color: #0078d7;">${descriptions[grammarType] || '文法说明'}</p>`;
+        propertiesPanel.innerHTML = `<p style="color: #0078d7; font-weight: bold;">📐 ${descriptions[grammarType]}</p><p style="color: #999; font-size: 11px; margin-top: 8px;">点击纹样卡片应用此规则</p>`;
     };
-});
-
-// ========== 工具切换 ==========
-document.querySelectorAll('.tool-btn').forEach(btn => {
-    btn.onclick = () => {
-        if (btn.id === 'tool-reset') {
-            // 重置
-            const svg = patternContainer.querySelector('svg');
-            if (svg) {
-                const firstWrapper = patternContainer.querySelector('.pattern-wrapper');
-                if (firstWrapper && firstWrapper.querySelector('svg')) {
-                    svg.innerHTML = firstWrapper.querySelector('svg').innerHTML;
-                }
-            }
-            clearSelection();
-            isInverted = false;
-            updateLayerList();
-            pushHistory();
-            return;
-        }
-
-        document.querySelectorAll('.tool-btn').forEach(t => t.classList.remove('active'));
-        btn.classList.add('active');
-        currentTool = btn.id.replace('tool-', '');
-        document.body.style.cursor = (currentTool === 'eyedropper') ? 'crosshair' : 'default';
-    };
-});
-
-// ========== 画布交互 ==========
-patternContainer.addEventListener('click', (e) => {
-    if (currentTool === 'eyedropper' && grammarType) {
-        const svg = patternContainer.querySelector('svg');
-        if (!svg) return;
-
-        applyGrammarRule(svg, grammarType);
-
-        // 自动切回选择工具
-        document.getElementById('tool-select').click();
-        clearSelection();
-        updateLayerList();
-        pushHistory();
-    }
 });
 
 // ========== 文法应用逻辑 ==========
@@ -295,32 +349,30 @@ function applyGrammarRule(svg, rule) {
     const origX = bbox.x;
     const origY = bbox.y;
 
-    // 获取原始子元素
     const originalChildren = Array.from(svg.children);
 
     switch (rule) {
-        case 'repeat': // 二方连续 - 水平重复 4 次
+        case 'repeat':
             applyRepeatPattern(svg, originalChildren, origWidth);
             svg.setAttribute('viewBox', `${origX} ${origY} ${origWidth * 4} ${origHeight}`);
             break;
 
-        case 'symmetry': // 对称式 - 上下镜像，向下移动
+        case 'symmetry':
             applySymmetryPattern(svg, originalChildren, origWidth, origHeight, origY);
             svg.setAttribute('viewBox', `${origX} ${origY} ${origWidth} ${origHeight * 2}`);
             break;
 
-        case 'four-way': // 四方连续 - 2×2 网格
+        case 'four-way':
             applyFourWayPattern(svg, originalChildren, origWidth, origHeight);
             svg.setAttribute('viewBox', `${origX} ${origY} ${origWidth * 2} ${origHeight * 2}`);
             break;
 
-        case 'center': // 中心式 - 围绕中心旋转
+        case 'center':
             applyCenterPattern(svg, originalChildren, bbox);
             break;
     }
 }
 
-// 二方连续 - 水平重复 4 次
 function applyRepeatPattern(svg, originalChildren, origWidth) {
     for (let i = 1; i < 4; i++) {
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -335,9 +387,7 @@ function applyRepeatPattern(svg, originalChildren, origWidth) {
     }
 }
 
-// 对称式 - 上下镜像，向下移动
 function applySymmetryPattern(svg, originalChildren, origWidth, origHeight, origY) {
-    // 原始纹样
     const g1 = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g1.setAttribute('transform', `translate(0, 0)`);
     originalChildren.forEach(child => {
@@ -346,7 +396,6 @@ function applySymmetryPattern(svg, originalChildren, origWidth, origHeight, orig
     });
     svg.appendChild(g1);
 
-    // 镜像纹样（上下翻转） + 向下移动
     const g2 = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     const centerY = origY + origHeight / 2;
     g2.setAttribute('transform', `translate(0, ${origHeight}) scale(1, -1) translate(0, ${-2 * centerY})`);
@@ -358,7 +407,6 @@ function applySymmetryPattern(svg, originalChildren, origWidth, origHeight, orig
     svg.appendChild(g2);
 }
 
-// 四方连续 - 2×2 网格
 function applyFourWayPattern(svg, originalChildren, origWidth, origHeight) {
     const positions = [
         { x: 0, y: 0 },
@@ -368,7 +416,7 @@ function applyFourWayPattern(svg, originalChildren, origWidth, origHeight) {
     ];
 
     positions.forEach((pos, idx) => {
-        if (idx === 0) return; // 第一个已有
+        if (idx === 0) return;
 
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.setAttribute('transform', `translate(${pos.x}, ${pos.y})`);
@@ -382,7 +430,6 @@ function applyFourWayPattern(svg, originalChildren, origWidth, origHeight) {
     });
 }
 
-// 中心式 - 围绕中心旋转
 function applyCenterPattern(svg, originalChildren, bbox) {
     const centerX = bbox.x + bbox.width / 2;
     const centerY = bbox.y + bbox.height / 2;
@@ -403,102 +450,81 @@ function applyCenterPattern(svg, originalChildren, bbox) {
     }
 }
 
-// ========== 正负形切换 ==========
-document.getElementById('tool-invert').onclick = () => {
-    const svg = patternContainer.querySelector('svg');
-    if (!svg) return;
-
-    isInverted = !isInverted;
-    const shapes = svg.querySelectorAll('path, ellipse, rect, circle, polygon');
-
-    shapes.forEach(shape => {
-        const fill = shape.getAttribute('fill');
-        const stroke = shape.getAttribute('stroke');
-
-        shape.setAttribute('fill', stroke || 'black');
-        shape.setAttribute('stroke', fill || 'white');
-    });
-
-    pushHistory();
-};
-
-// ========== 组合/拆分 ==========
-document.getElementById('tool-group').onclick = () => {
-    if (selectedShapes.length < 2) return;
-
-    const svg = patternContainer.querySelector('svg');
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-
-    selectedShapes.forEach(el => g.appendChild(el));
-    svg.appendChild(g);
-
-    clearSelection();
-    updateLayerList();
-    pushHistory();
-};
-
-document.getElementById('tool-ungroup').onclick = () => {
-    const svg = patternContainer.querySelector('svg');
-
-    selectedShapes.forEach(el => {
-        if (el.tagName === 'g') {
-            while (el.firstChild) {
-                svg.insertBefore(el.firstChild, el);
-            }
-            el.remove();
-        }
-    });
-
-    clearSelection();
-    updateLayerList();
-    pushHistory();
-};
-
-document.getElementById('tool-delete').onclick = () => {
-    selectedShapes.forEach(el => el.remove());
-    clearSelection();
-    updateLayerList();
-    pushHistory();
-};
-
 // ========== 撤销 ==========
 function pushHistory() {
-    const svg = patternContainer.querySelector('svg');
-    if (!svg) return;
-    undoStack.push(svg.outerHTML);
+    const html = patternContainer.innerHTML;
+    undoStack.push(html);
     if (undoStack.length > 50) undoStack.shift();
 }
 
-btnUndo.onclick = () => {
+document.getElementById('btn-undo').onclick = () => {
     if (undoStack.length <= 1) return;
 
     undoStack.pop();
     const prev = undoStack[undoStack.length - 1];
 
-    const wrapper = patternContainer.querySelector('.pattern-wrapper');
-    if (wrapper) {
-        wrapper.innerHTML = prev;
-    }
+    patternContainer.innerHTML = prev;
+    patterns.clear();
+    
+    document.querySelectorAll('.pattern-wrapper').forEach(wrapper => {
+        bindWrapperEvents(wrapper);
+        const filename = wrapper.dataset.filename;
+        patterns.set(filename, wrapper);
+    });
 
-    bindShapeEvents();
     updateLayerList();
-    clearSelection();
+    clearWrapperSelection();
 };
 
 // ========== 保存 ==========
-btnSave.onclick = () => {
-    const svg = patternContainer.querySelector('svg');
-    if (!svg) return;
+document.getElementById('btn-save').onclick = () => {
+    if (patterns.size === 0) {
+        alert('没有导入任何纹样！');
+        return;
+    }
 
-    const svgString = svg.outerHTML;
+    // 创建 SVG 容器
+    const svgContainer = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svgContainer.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    patterns.forEach((wrapper, filename) => {
+        const svg = wrapper.querySelector('svg');
+        if (svg) {
+            const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            
+            const bbox = svg.getBBox();
+            const x = parseInt(wrapper.style.left) || 0;
+            const y = parseInt(wrapper.style.top) || 0;
+            
+            g.setAttribute('transform', `translate(${x}, ${y})`);
+            
+            Array.from(svg.children).forEach(child => {
+                g.appendChild(child.cloneNode(true));
+            });
+            
+            svgContainer.appendChild(g);
+            
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + bbox.width);
+            maxY = Math.max(maxY, y + bbox.height);
+        }
+    });
+    
+    const padding = 20;
+    svgContainer.setAttribute('viewBox', `${minX - padding} ${minY - padding} ${maxX - minX + padding * 2} ${maxY - minY + padding * 2}`);
+    svgContainer.setAttribute('width', (maxX - minX + padding * 2));
+    svgContainer.setAttribute('height', (maxY - minY + padding * 2));
+
+    const svgString = svgContainer.outerHTML;
     const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
 
-    localStorage.setItem('currentPattern', svgString);
-
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'pattern.svg';
+    a.download = `patterns-${new Date().getTime()}.svg`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -506,10 +532,10 @@ btnSave.onclick = () => {
 };
 
 // ========== 跳转 ==========
-btnJump.onclick = () => {
-    const svg = patternContainer.querySelector('svg');
-    if (svg) {
-        localStorage.setItem('currentPattern', svg.outerHTML);
+document.getElementById('btn-jump').onclick = () => {
+    const html = patternContainer.innerHTML;
+    if (html && patterns.size > 0) {
+        localStorage.setItem('currentPattern', html);
     }
     window.location.href = 'text-pattern.html';
 };
@@ -519,24 +545,23 @@ document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey) {
         if (e.key === 'z') {
             e.preventDefault();
-            btnUndo.click();
+            document.getElementById('btn-undo').click();
         } else if (e.key === 's') {
             e.preventDefault();
-            btnSave.click();
-        } else if (e.key === 'g') {
-            e.preventDefault();
-            document.getElementById('tool-group').click();
+            document.getElementById('btn-save').click();
         }
-    } else if (e.key === 'i') {
-        document.getElementById('tool-eyedropper').click();
-    } else if (e.key === 'v') {
-        document.getElementById('tool-select').click();
     } else if (e.key === 'Delete') {
         document.getElementById('tool-delete').click();
+    } else if (e.key === 'v') {
+        document.getElementById('tool-select').click();
+    } else if (e.key === 'm') {
+        document.getElementById('tool-move').click();
+    } else if (e.key === 'i') {
+        document.getElementById('tool-eyedropper').click();
     }
 });
 
 // ========== 初始化 ==========
 document.addEventListener('DOMContentLoaded', () => {
-    clearSelection();
+    clearWrapperSelection();
 });
