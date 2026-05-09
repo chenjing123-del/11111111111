@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>侗锦纹样编辑系统</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+</head>
+<body>
+    <!-- 顶部操作栏 -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <button class="topbar-btn" id="btn-import" title="导入 SVG 纹样">
+                <i class="fas fa-file-import"></i>
+                <span>导入纹样</span>
+            </button>
+            <div class="topbar-divider"></div>
+            <button class="topbar-btn" id="btn-save" title="保存为 SVG">
+                <i class="fas fa-save"></i>
+                <span>保存</span>
+            </button>
+            <button class="topbar-btn" id="btn-undo" title="撤销上一步">
+                <i class="fas fa-undo"></i>
+                <span>撤销</span>
+            </button>
+            <div class="topbar-divider"></div>
+            <button class="topbar-btn" id="btn-jump" title="前往文字为纹样生成实验">
+                <i class="fas fa-flask"></i>
+                <span>文字为纹样生成实验</span>
+            </button>
+        </div>
+        <input type="file" id="svg-upload" accept=".svg,image/svg+xml" style="display:none" />
+    </div>
+
+    <!-- 主布局 -->
+    <div class="main-layout">
+        <!-- 左侧工具栏 -->
+        <div class="sidebar-left">
+            <div class="sidebar-header">
+                <span>操作工具</span>
+            </div>
+            <div class="toolbar">
+                <button class="tool-btn active" id="tool-select" title="选择工具">
+                    <i class="fas fa-arrow-pointer"></i>
+                    <span class="tooltip">选择 (V)</span>
+                </button>
+                <button class="tool-btn" id="tool-move" title="移动工具">
+                    <i class="fas fa-arrows-alt"></i>
+                    <span class="tooltip">移动 (M)</span>
+                </button>
+                <button class="tool-btn" id="tool-eyedropper" title="文法吸管">
+                    <i class="fas fa-eyedropper"></i>
+                    <span class="tooltip">吸管 (I)</span>
+                </button>
+                <div class="tool-divider"></div>
+                <button class="tool-btn" id="tool-invert" title="正负形切换">
+                    <i class="fas fa-adjust"></i>
+                    <span class="tooltip">正负形</span>
+                </button>
+                <button class="tool-btn" id="tool-group" title="组合元素">
+                    <i class="fas fa-object-group"></i>
+                    <span class="tooltip">组合 (Ctrl+G)</span>
+                </button>
+                <button class="tool-btn" id="tool-ungroup" title="拆分组合">
+                    <i class="fas fa-object-ungroup"></i>
+                    <span class="tooltip">拆分 (Ctrl+Shift+G)</span>
+                </button>
+                <button class="tool-btn" id="tool-delete" title="删除选中元素">
+                    <i class="fas fa-trash"></i>
+                    <span class="tooltip">删除 (Del)</span>
+                </button>
+                <div class="tool-divider"></div>
+                <button class="tool-btn" id="tool-reset" title="重置为初始状态">
+                    <i class="fas fa-redo"></i>
+                    <span class="tooltip">重置</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 中央画布区 -->
+        <div class="canvas-wrapper" id="canvas">
+            <div class="canvas-header">
+                <span>显示效果区</span>
+                <small>导入 SVG 文件或在下方拖拽上传</small>
+            </div>
+            <div id="pattern-container" class="pattern-container">
+                <!-- SVG 纹样加载在此 -->
+            </div>
+        </div>
+
+        <!-- 右侧面板 -->
+        <div class="sidebar-right">
+            <!-- 图层面板 -->
+            <div class="panel">
+                <div class="panel-header">
+                    <i class="fas fa-layer-group"></i>
+                    <span>图层结构</span>
+                </div>
+                <ul id="layer-list" class="layer-list">
+                    <!-- 图层项动态生成 -->
+                </ul>
+            </div>
+
+            <!-- 文法选项面板 -->
+            <div class="panel">
+                <div class="panel-header">
+                    <i class="fas fa-shapes"></i>
+                    <span>文法规则</span>
+                </div>
+                <div class="grammar-tags">
+                    <span class="grammar-tag" data-grammar="repeat">
+                        <div style="font-size: 24px; line-height: 1; margin-bottom: 4px;">▬▬▬</div>
+                        <span class="grammar-tag-name">二方连续</span>
+                    </span>
+                    <span class="grammar-tag" data-grammar="symmetry">
+                        <div style="font-size: 24px; line-height: 1; margin-bottom: 4px;">◄►</div>
+                        <span class="grammar-tag-name">对称式</span>
+                    </span>
+                    <span class="grammar-tag" data-grammar="four-way">
+                        <div style="font-size: 24px; line-height: 1; margin-bottom: 4px;">⊞</div>
+                        <span class="grammar-tag-name">四方连续</span>
+                    </span>
+                    <span class="grammar-tag" data-grammar="center">
+                        <div style="font-size: 24px; line-height: 1; margin-bottom: 4px;">◉</div>
+                        <span class="grammar-tag-name">中心式</span>
+                    </span>
+                </div>
+                <p class="grammar-tips">选择文法类型后，点击吸管工具对纹样应用规则</p>
+            </div>
+
+            <!-- 属性面板 -->
+            <div class="panel">
+                <div class="panel-header">
+                    <i class="fas fa-sliders-h"></i>
+                    <span>元素信息</span>
+                </div>
+                <div id="properties-panel" class="properties-panel">
+                    <p style="color: #999; font-size: 12px;">选中元素后显示详细信息</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/main.js"></script>
+</body>
+</html>
